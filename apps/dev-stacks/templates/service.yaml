@@ -1,0 +1,17 @@
+{{- range .Values.usernames }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "code-server.fullname" . }}
+  namespace: {{ .name }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "code-server.selectorLabels" . | nindent 4 }}
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+{{- end }}

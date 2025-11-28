@@ -1,0 +1,24 @@
+# This file is our "App-of-apps". It is initially pushed into k8s by the terraform_bootstrap/m2-k8s-apps
+# Then argocd fetches the main git repo, goes into the apps folder to find the kustomize.yaml
+# which globs this self-same file.
+# We avoid a circular dependency because argocd does an apply to k8s, so this should match
+# the version pushed by terraform and thus not trigger a reconsiliation cycle in argo.
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: main
+  namespace: argocd
+spec:
+  project: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+  destination:
+    server: "https://kubernetes.default.svc"
+    namespace: argocd
+  source:
+    repoURL: 'http://gitea-http.gitea.svc.cluster.local:3000/main_org/main.git'
+    path: apps
+    targetRevision: master

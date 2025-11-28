@@ -1,0 +1,162 @@
+{{- range .Values.usernames }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "code-server.fullname" . }}
+  namespace: {{ .name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "code-server.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+  serviceName: {{ include "code-server.fullname" . }}
+  template:
+    metadata:
+      labels:
+        {{- include "code-server.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/instance: {{ $.Release.Name }}
+    spec:
+      serviceAccountName: {{ include "code-server.fullname" . }}
+      initContainers:
+        - name: install-tools
+          image: alpine:latest
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -ex
+
+              # Only download if tools are missing
+              if [ -f /config/tools/kubectl ] && [ -f /config/tools/k9s ]; then
+                echo "--- Tools already installed. Skipping installation. ---";
+                exit 0;
+              fi;
+              mkdir /config/tools || echo "tools directory exists";
+              apk add --no-cache curl tar;
+
+              K8S_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt);
+              curl -O "https://dl.k8s.io/release/${K8S_VERSION}/bin/linux/amd64/kubectl";
+
+              curl -O -L https://github.com/derailed/k9s/releases/download/v0.50.16/k9s_Linux_amd64.tar.gz;
+              tar -xzf k9s_Linux_amd64.tar.gz;
+
+              chmod +x kubectl k9s;
+              mv kubectl k9s /config/tools/;
+          volumeMounts:
+            - name: storage
+              mountPath: /config
+        - name: clone-repo
+          image: alpine/git:latest
+          env:
+            - name: GITEA_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gitea-creds
+                  key: accessToken
+          command: ["sh", "-c"]
+          args:
+            - |
+              # Use 'set -ex' but temporarily disable echoing when using the token
+              set -ex
+              apk update && apk add --no-cache curl jq
+              USER_NAME="{{ .name }}"
+              GITEA_DOMAIN="{{ $.Values.giteaDomain }}"
+              REPO_ORG="main_org"
+              API_BASE_URL="http://$GITEA_DOMAIN/api/v1"
+
+              echo "--- DEBUG: Verifying Gitea Connectivity and Authentication for $USER_NAME ---"
+
+              # Hide token from logs during curl execution
+              set +x
+
+              # 1. Verify Connectivity and Authentication (Check the current user's details)
+              # API Endpoint: GET /user
+              AUTH_RESPONSE=$(curl -s -u "$USER_NAME:$GITEA_ACCESS_TOKEN" "$API_BASE_URL/user")
+              AUTH_HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u "$USER_NAME:$GITEA_ACCESS_TOKEN" "$API_BASE_URL/user")
+
+              # Restore echoing
+              set -x
+
+              echo "API Status Code (GET /user): $AUTH_HTTP_CODE"
+
+              if [ "$AUTH_HTTP_CODE" != "200" ]; then
+               echo "ERROR: Gitea connectivity failed or token is invalid! Response: $AUTH_RESPONSE"
+               echo "FATAL: Cannot proceed without valid API access."
+               exit 1
+              fi
+
+              echo "SUCCESS: User authentication confirmed (HTTP 200)."
+              echo "User details (snippet): $(echo "$AUTH_RESPONSE" | head -n 1)"
+
+              # 2. Verify Repository/Organization Access
+              # API Endpoint: GET /repos/{owner}/{repo}
+              # Check if Gitea recognizes the repository path AND if the user has read access
+              set +x
+              REPO_PATH="main_org/main"
+              REPO_CHECK_RESPONSE=$(curl -s -u "$USER_NAME:$GITEA_ACCESS_TOKEN" "$API_BASE_URL/repos/$REPO_PATH")
+              REPO_CHECK_HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u "$USER_NAME:$GITEA_ACCESS_TOKEN" "$API_BASE_URL/repos/$REPO_PATH")
+              set -x
+
+              echo "Repo Check Status Code (GET /repos/$REPO_PATH): $REPO_CHECK_HTTP_CODE"
+
+              if [ "$REPO_CHECK_HTTP_CODE" = "200" ]; then
+               echo "SUCCESS: Repository is accessible via API. Proceeding to git clone."
+              elif [ "$REPO_CHECK_HTTP_CODE" = "404" ]; then
+               echo "ERROR: Repository $REPO_PATH not found via API. Check Gitea's canonical URL setting (LOCAL_ROOT_URL) or repository existence."
+               echo "API Response: $REPO_CHECK_RESPONSE"
+               exit 1
+              elif [ "$REPO_CHECK_HTTP_CODE" = "403" ]; then
+               echo "ERROR: Forbidden (403). User $USER_NAME does not have permissions to access the repository."
+               exit 1
+              else
+               echo "ERROR: Unexpected API status $REPO_CHECK_HTTP_CODE."
+               exit 1
+              fi
+
+              # --- Git Configuration and Clone (Only runs if API checks pass) ---
+
+              git config --global user.email "{{ .email }}";
+              git config --global user.name "{{ .name }}";
+
+              # Re-echoing the final clone URL without the PAT for logs
+              echo "Attempting clone: http://{{ .name }}@{{ $.Values.giteaDomain }}/main_org/main.git"
+
+              if [ ! -d "/config/workspace/main" ]; then
+               # Use set +x again to hide the token during the clone
+               set +x
+               git clone http://{{ .name }}:$(GITEA_ACCESS_TOKEN)@{{ $.Values.giteaDomain }}/main_org/main.git /config/workspace/main;
+               set -x
+              fi;
+          volumeMounts:
+            - name: storage
+              mountPath: /config
+      containers:
+        - name: code-server
+          image: lscr.io/linuxserver/code-server:latest
+          env:
+            - name: PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: gitea-creds
+                  key: password
+            - name: SUDO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: gitea-creds
+                  key: password
+            - name: PATH
+              value: "/config/tools:$(PATH)"
+          volumeMounts:
+            - name: storage
+              mountPath: /config
+  volumeClaimTemplates:
+    - metadata:
+        name: storage
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi
+---
+{{- end }}

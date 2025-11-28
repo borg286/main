@@ -1,0 +1,34 @@
+# 1. ServiceAccount: Identity for the Job
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: provisioner-serviceaccount
+  namespace: argocd
+---
+# 2. ClusterRole: Defines the permissions needed
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  # Name this role generically, as it grants broad permissions
+  name: secret-provisioner-cluster-role
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "create", "update", "patch"] # Permissions needed for kubectl apply
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"] # Specific read permission for checking existing Secrets
+---
+# 3. ClusterRoleBinding: Links the ServiceAccount (who) to the ClusterRole (what)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: provisioner-to-cluster-secrets
+subjects:
+- kind: ServiceAccount
+  name: provisioner-serviceaccount # Must match the ServiceAccount name above
+  namespace: argocd # Must match the namespace where the Job runs
+roleRef:
+  kind: ClusterRole
+  name: secret-provisioner-cluster-role # Must match the ClusterRole name above
+  apiGroup: rbac.authorization.k8s.io

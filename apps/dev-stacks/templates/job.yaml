@@ -1,0 +1,199 @@
+{{- range .Values.usernames }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: user-provisioner-{{ .name }}
+  namespace: argocd
+  labels:
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/name: user-provisioner
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      # We need a ServiceAccount that has permissions to 'get' Secrets in the user's namespace
+      # to check for the existing password/PAT.
+      serviceAccountName: provisioner-serviceaccount # You must ensure this SA exists and has permissions
+      restartPolicy: OnFailure
+      containers:
+        - name: user-provisioner-{{ .name }}
+          image: bitnami/kubectl:latest
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              # Set verbose mode and exit on error
+              set -eu
+
+              USER_NAME="{{ .name }}"
+              USER_NAMESPACE="{{ .name }}"
+              USER_EMAIL="{{ .email }}"
+              REPO_URL=$(cat /etc/gitea-repo/url)
+              # Normalize the internal Gitea URL for API access.
+              # Example: http://gitea-http.gitea.svc.cluster.local:3000/main_org/main.git
+              # Becomes: gitea-http.gitea.svc.cluster.local:3000
+              # The 'sed' command removes the protocol prefix (http(s)://) and everything after the first slash.
+              GITEA_HOST_PORT=$(echo "$REPO_URL" | sed 's|^http[s]*://||; s|/.*||')
+              API_URL="http://$GITEA_HOST_PORT/api/v1"
+
+              # 1. Source Gitea Admin Credentials
+              ADMIN_USER=$(cat /etc/gitea-repo/username)
+              ADMIN_PASS=$(cat /etc/gitea-repo/password)
+
+              echo "Processing user: $USER_NAME against API: $API_URL"
+
+              # 2. Check for existing Secret (contains password and PAT)
+              EXISTING_SECRET=$(kubectl get secret gitea-creds -n "$USER_NAMESPACE" --ignore-not-found)
+              EXISTING_PASS=""
+              PAT_EXPIRED="true"
+
+              if [ -n "$EXISTING_SECRET" ]; then
+                  echo "Found existing secret in $USER_NAMESPACE. Retrieving existing password."
+
+                  # Retrieve existing password (base64 decoded)
+                  EXISTING_PASS=$(kubectl get secret gitea-creds -n "$USER_NAMESPACE" -o=jsonpath='{.data.password}' | base64 -d)
+
+                  # Retrieve existing PAT
+                  EXISTING_PAT=$(kubectl get secret gitea-creds -n "$USER_NAMESPACE" -o=jsonpath='{.data.accessToken}' | base64 -d)
+
+                  # Check PAT expiration (Gitea API only allows checking if a token is valid, not expiration date)
+                  # A simple check: If the PAT exists and is valid, we'll reuse it.
+                  # Since Gitea API lacks a simple "check token validity" endpoint, we use a cheap authenticated API call.
+                  # Note: This is a weak check. A dedicated token management system is better.
+                  AUTH_CHECK=$(curl -s -u "$USER_NAME:$EXISTING_PAT" "$API_URL/user" | grep -o '"id":')
+                  if [ -n "$AUTH_CHECK" ]; then
+                      echo "Existing PAT is still valid. Reusing."
+                      PAT_EXPIRED="false"
+                      PAT="$EXISTING_PAT"
+                  else
+                      echo "Existing PAT failed validation or expired. A new one will be created."
+                  fi
+              fi
+
+              # Set the password for the Secret to the existing value, or generate a new one if it's the first run
+              if [ -z "$EXISTING_PASS" ]; then
+                  echo "No existing password found. Generating new user credentials."
+                  # Generate a secure 16-character alphanumeric password
+                  PASSWORD=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 16)
+
+                  # 3. Check and Create User (Only if Secret was missing, implying first run)
+                  USER_CHECK_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -u "$ADMIN_USER:$ADMIN_PASS" "$API_URL/users/$USER_NAME")
+
+                  if [ "$USER_CHECK_RESPONSE" != "200" ]; then
+                      echo "User '$USER_NAME' not found. Creating with generated password."
+                      set +x
+                      CREATE_RESPONSE=$(curl -X POST -u "$ADMIN_USER:$ADMIN_PASS" \
+                          -H "Content-Type: application/json" \
+                          -d '{"username": "'$USER_NAME'", "email": "'$USER_EMAIL'", "password": "'$PASSWORD'", "must_change_password": false}' \
+                          "$API_URL/admin/users"
+                      )
+                      set -x
+
+                      if ! echo "$CREATE_RESPONSE" | grep -q '"id":'; then
+                          echo "ERROR: Failed to create user $USER_NAME. Response: $CREATE_RESPONSE"
+                          exit 1
+                      fi
+                  else
+                      echo "User '$USER_NAME' exists, but Secret was missing. Using generated password."
+                  fi
+              else
+                  PASSWORD="$EXISTING_PASS" # Use the password retrieved from the existing Secret
+              fi
+
+              # 4. Create New PAT if needed (PAT_EXPIRED="true" OR Secret was missing)
+              if [ "$PAT_EXPIRED" = "true" ]; then
+                  echo "Creating new PAT for $USER_NAME..."
+
+                  # Required scope for full dev experience (push/pull, issues)
+                  PAT_RESPONSE=$(curl -X POST -u "$ADMIN_USER:$ADMIN_PASS" \
+                      -H "Content-Type: application/json" \
+                      -d '{"name": "code-server-pat-'$USER_NAME'-$(date +%s)", "scopes": ["write:repository", "read:user", "write:issue"]}' \
+                      "$API_URL/users/$USER_NAME/tokens"
+                  )
+
+                  # Extract token
+                  PAT=$(echo "$PAT_RESPONSE" | grep -o '"sha1": *"[^"]*"' | grep -o '"[^"]*"$' | tr -d '"')
+
+                  if [ -z "$PAT" ]; then
+                      echo "ERROR: Failed to retrieve PAT for user $USER_NAME. Response: $PAT_RESPONSE"
+                      exit 1
+                  fi
+              fi
+              # 6. Verify and Add User to Organization Team 🔑
+              echo "--- 6. Verifying team membership for $USER_NAME ---"
+              
+              # A. Get the Team ID for the main_team
+              # API: GET /orgs/main_org/teams
+              TEAM_RESPONSE=$(curl -s -u "$ADMIN_USER:$ADMIN_PASS" "$API_URL/orgs/main_org/teams")
+              TEAM_ID=$(echo "$TEAM_RESPONSE" | jq -r --arg team "main_team" '.[] | select(.name == $team) | .id')
+
+              if [ -z "$TEAM_ID" ]; then
+                  echo "ERROR: Could not find team 'main_team' in organization 'main_org'. Team check failed."
+                  exit 1
+              fi
+              echo "Found team 'main_team' with ID: $TEAM_ID"
+              
+              # B. Check if the user is a member of the team
+              # API: GET /teams/{id}/members/{username} - Returns 204 if member, 404 if not.
+              MEMBER_CHECK_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u "$ADMIN_USER:$ADMIN_PASS" \
+                  "$API_URL/teams/$TEAM_ID/members/$USER_NAME"
+              )
+
+              if [ "$MEMBER_CHECK_CODE" = "404" ]; then
+                  echo "User $USER_NAME is NOT a member. Adding to team main_team."
+                  
+                  # C. Add the user to the team
+                  # API: PUT /teams/{id}/members/{username}
+                  ADD_RESPONSE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT -u "$ADMIN_USER:$ADMIN_PASS" \
+                      "$API_URL/teams/$TEAM_ID/members/$USER_NAME"
+                  )
+                  
+                  if [ "$ADD_RESPONSE_CODE" = "204" ]; then
+                      echo "SUCCESS: Added user $USER_NAME to main_team."
+                  else
+                      echo "ERROR: Failed to add user to team. HTTP Status: $ADD_RESPONSE_CODE"
+                      exit 1
+                  fi
+              else
+                  echo "User $USER_NAME is already a member of main_team. Skipping add."
+              fi
+              # 7. Define and Apply the Kubernetes Secret
+              B64_PAT=$(echo -n "$PAT" | base64 -w 0)
+              B64_PASS=$(echo -n "$PASSWORD" | base64 -w 0)
+
+              SECRET_YAML=$(cat << EOF
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: gitea-creds
+                namespace: $USER_NAMESPACE
+              type: Opaque
+              data:
+                accessToken: $B64_PAT
+                password: $B64_PASS
+              EOF
+              )
+
+              echo "$SECRET_YAML" | kubectl apply -f -
+              echo "Successfully applied gitea-creds Secret for $USER_NAME in namespace $USER_NAMESPACE."
+
+          volumeMounts:
+            - name: gitea-repo-creds
+              mountPath: "/etc/gitea-repo"
+              readOnly: true
+            - name: kubectl-cache
+              mountPath: /root/.kube # Required for kubectl operations in a non-SA environment
+      volumes:
+        - name: gitea-repo-creds
+          secret:
+            secretName: gitea-repo
+            items:
+              - key: username
+                path: username
+              - key: password
+                path: password
+              - key: url
+                path: url
+        - name: kubectl-cache
+          emptyDir: {}
+{{- end }}

@@ -1,0 +1,35 @@
+machine:
+  nodeLabels:
+    node.longhorn.io/create-default-disk: "true"
+  install:
+    disk: ${disk_device}
+    # Only siderolabs/iscsi-tools was selected
+    image: factory.talos.dev/metal-installer/c9078f9419961640c712a8bf2bb9174933dfcf1da383fd8ea2b7dc21493f8bac:${talos_version}
+  kubelet:
+    extraMounts:
+      - destination: /var/lib/longhorn
+        type: bind
+        source: /var/lib/longhorn
+        options:
+          - bind
+          - rshared
+          - rw
+
+cluster:
+  allowSchedulingOnControlPlanes: true
+---
+apiVersion: v1alpha1
+kind: VolumeConfig
+# EPHEMERAL would normally take up the rest of the disk.
+# We intentionally shrink it to give the rest of the disk to longhorn
+name: EPHEMERAL
+provisioning:
+  maxSize: 10GiB
+---
+apiVersion: v1alpha1
+kind: UserVolumeConfig
+name: longhorn
+provisioning:
+  diskSelector:
+    match: system_disk
+  minSize: ${longhorn_space}

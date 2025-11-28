@@ -1,0 +1,4 @@
+usernames:
+  - name: borg
+    email: borg286@gmail.com
+giteaDomain: "gitea-http.gitea.svc.cluster.local:3000"

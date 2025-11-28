@@ -1,0 +1,5 @@
+server:
+  extraArgs:
+    - --insecure # Required to talk to the internal Gitea HTTP service
+  service:
+    type: NodePort

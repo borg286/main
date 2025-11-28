@@ -1,0 +1,28 @@
+gitea:
+  config:
+    server:
+      LOCAL_ROOT_URL: "http://gitea-http.gitea.svc.cluster.local:3000/"
+  admin:
+    username: "gitea_admin"
+    email: "admin@local.domain"
+    existingSecret: "gitea-admin-secret"
+    existingSecretPasswordKey: "password"
+
+service:
+  http:
+    type: NodePort
+    # Exposes Gitea UI/API publicly for the Terraform provider
+    nodePort: 30000
+
+postgresql-ha:
+  enabled: false
+
+postgresql:
+  enabled: true
+  persistence:
+    enabled: true
+    size: 10Gi
+
+persistence:
+  enabled: true
+  size: 10Gi

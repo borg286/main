@@ -1,0 +1,8 @@
+context: ${context_name}
+contexts:
+  ${context_name}:
+    endpoints: []
+    ca: "${client_configuration.ca_certificate}"
+    crt: "${client_configuration.client_certificate}"
+    key: "${client_configuration.client_key}"
+current-context: ${context_name}

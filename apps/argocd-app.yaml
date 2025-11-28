@@ -1,0 +1,28 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+  destination:
+    server: "https://kubernetes.default.svc"
+    namespace: argocd
+  sources:
+    - repoURL: 'https://argoproj.github.io/argo-helm'
+      chart: argo-cd
+      targetRevision: v7.6.12
+      helm:
+        valueFiles:
+          - $values/apps/argocd.values.yaml
+    - repoURL: 'http://gitea-http.gitea.svc.cluster.local:3000/main_org/main.git'
+      targetRevision: master
+      ref: values

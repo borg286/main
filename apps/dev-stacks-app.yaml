@@ -1,0 +1,27 @@
+# dev-stacks-app.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: dev-stacks
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: 'http://gitea-http.gitea.svc.cluster.local:3000/main_org/main.git'
+    targetRevision: master
+    path: apps/dev-stacks
+  destination:
+    server: "https://kubernetes.default.svc"
+    namespace: argocd  # Note, this chart produces manifests for various namespaces, which should take precidence. 
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - Prune=true
+  ignoreDifferences:
+    - group: ""
+      kind: Namespace
+      jsonPointers:
+        - /metadata/annotations
+        - /metadata/labels
