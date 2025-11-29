@@ -13,6 +13,7 @@ patches:
   - path: common/global-settings.patch.yaml
     target:
       kind: Application
-  - path: common/patch-repo-url.yaml
+  - path: common/patch-git-values.json6902.yaml
     target:
       kind: Application
+    type: json6902  # This allows us to replace at a specific index in sources, namely the repo that holds our values
