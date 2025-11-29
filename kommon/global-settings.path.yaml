@@ -1,0 +1,16 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: dummy
+spec:
+  # Centralized cluster destination
+  destination:
+    server: https://kubernetes.default.svc
+
+  # Centralized sync policy
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

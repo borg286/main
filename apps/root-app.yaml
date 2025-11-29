@@ -11,14 +11,10 @@ metadata:
   namespace: argocd
 spec:
   project: default
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
+
   destination:
-    server: "https://kubernetes.default.svc"
     namespace: argocd
+
   source:
-    repoURL: 'http://gitea-http.gitea.svc.cluster.local:3000/main_org/main.git'
-    path: apps
-    targetRevision: master
+    repoURL: dummy
+    ref: values
