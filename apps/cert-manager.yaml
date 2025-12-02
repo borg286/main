@@ -16,7 +16,6 @@ spec:
       interval: 1h
   install:
     createNamespace: true
-  install:
     crds: Create
   upgrade:
     crds: Skip
