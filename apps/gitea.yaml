@@ -2,7 +2,7 @@ apiVersion: hyperspike.io/v1
 kind: Gitea
 metadata:
   name: gitea
-  namespace: gitea-operator
+  namespace: gitea-operator-system
 spec:
   ingress:
     host: gitea.3474013.xyz
@@ -13,7 +13,7 @@ metadata:
   labels:
     app.kubernetes.io/name: gitea-operator
   name: main-org
-  namespace: gitea-operator
+  namespace: gitea-operator-system
 spec:
   description: Main organization
   instance:
@@ -28,7 +28,7 @@ metadata:
   labels:
     app.kubernetes.io/name: gitea-operator
   name: main
-  namespace: gitea-operator
+  namespace: gitea-operator-system
 spec:
   private: true
   org:
