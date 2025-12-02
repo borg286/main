@@ -1,0 +1,38 @@
+apiVersion: hyperspike.io/v1
+kind: Gitea
+metadata:
+  name: gitea
+  namespace: gitea-operator
+spec:
+  ingress:
+    host: gitea.3474013.xyz
+---
+apiVersion: hyperspike.io/v1
+kind: Org
+metadata:
+  labels:
+    app.kubernetes.io/name: gitea-operator
+  name: main-org
+  namespace: gitea-operator
+spec:
+  description: Main organization
+  instance:
+    name: gitea
+  teams:
+  - name: main-team
+    permission: admin
+---
+apiVersion: hyperspike.io/v1
+kind: Repo
+metadata:
+  labels:
+    app.kubernetes.io/name: gitea-operator
+  name: main
+  namespace: gitea-operator
+spec:
+  private: true
+  org:
+    name: main-org
+  #mirror: true
+  #cloneAddr: "${github_url}"
+  #mirrorInterval: 2m

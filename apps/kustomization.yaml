@@ -9,3 +9,4 @@ resources:
   - postgres-operator.yaml
   - https://github.com/hyperspike/gitea-operator/releases/download/v0.0.13/install.yaml
   - https://github.com/hyperspike/valkey-operator/releases/download/v0.0.61/install.yaml
+  - gitea.yaml
