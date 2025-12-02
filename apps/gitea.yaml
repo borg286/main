@@ -4,6 +4,8 @@ metadata:
   name: gitea
   namespace: gitea-operator-system
 spec:
+  tls: true
+  certIssuer: letsencrypt-prod
   ingress:
     host: gitea.3474013.xyz
 ---
