@@ -17,6 +17,8 @@ machine:
 
 cluster:
   allowSchedulingOnControlPlanes: true
+  extraManifests:
+    - https://github.com/fluxcd/flux2/releases/latest/download/install.yaml
 ---
 apiVersion: v1alpha1
 kind: VolumeConfig
