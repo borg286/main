@@ -1,0 +1,96 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gitea-repo-creator
+  namespace: gitea
+spec:
+  template:
+    spec:
+      containers:
+      - name: gitea-repo-creator
+        image: curlimages/curl:8.4.0
+        securityContext:
+          runAsUser: 0
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -ex
+          apk add --no-cache jq
+
+          GITEA_URL="http://gitea-http.gitea.svc.cluster.local:3000"
+          ORG_NAME="gitops"
+          REPO_NAME="main"
+          REPO_DESCRIPTION="Mirrored repository for GitOps"
+          MIRROR_URL="https://github.com/borg286/main.git"
+
+          # Wait for Gitea to be available
+          echo "Waiting for Gitea to be available at $GITEA_URL"
+          until curl -s -f -o /dev/null "$GITEA_URL"; do
+            echo "Gitea not available yet, sleeping for 5 seconds"
+            sleep 5
+          done
+          echo "Gitea is available"
+
+          # Check if organization exists
+          echo "Checking if organization '$ORG_NAME' exists"
+          ORG_EXISTS_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u "$GITEA_ADMIN_USER:$GITEA_ADMIN_PASSWORD" "$GITEA_URL/api/v1/orgs/$ORG_NAME")
+
+          if [ "$ORG_EXISTS_CODE" -eq 200 ]; then
+            echo "Organization '$ORG_NAME' already exists"
+          elif [ "$ORG_EXISTS_CODE" -eq 404 ]; then
+            echo "Organization '$ORG_NAME' does not exist, creating it"
+            CREATE_ORG_RESPONSE=$(curl -s -X POST -H "Content-Type: application/json" -d "{
+              \"username\": \"$ORG_NAME\",
+              \"visibility\": \"public\"
+            }" -u "$GITEA_ADMIN_USER:$GITEA_ADMIN_PASSWORD" "$GITEA_URL/api/v1/orgs")
+            if [ "$(echo "$CREATE_ORG_RESPONSE" | jq -r .username)" != "$ORG_NAME" ]; then
+                echo "Failed to create organization"
+                exit 1
+            fi
+            echo "Organization '$ORG_NAME' created"
+          else
+            echo "Error checking organization, status code: $ORG_EXISTS_CODE"
+            exit 1
+          fi
+
+          # Check if repository exists
+          echo "Checking if repository '$REPO_NAME' exists in organization '$ORG_NAME'"
+          REPO_EXISTS_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u "$GITEA_ADMIN_USER:$GITEA_ADMIN_PASSWORD" "$GITEA_URL/api/v1/repos/$ORG_NAME/$REPO_NAME")
+
+          if [ "$REPO_EXISTS_CODE" -eq 200 ]; then
+            echo "Repository '$REPO_NAME' already exists in organization '$ORG_NAME'"
+          elif [ "$REPO_EXISTS_CODE" -eq 404 ]; then
+            echo "Repository '$REPO_NAME' does not exist, creating it as a mirror of $MIRROR_URL"
+            MIGRATE_REPO_RESPONSE=$(curl -s -X POST -H "Content-Type: application/json" -d "{
+              \"clone_addr\": \"$MIRROR_URL\",
+              \"uid\": 1,
+              \"repo_name\": \"$REPO_NAME\",
+              \"mirror\": true,
+              \"private\": false,
+              \"description\": \"$REPO_DESCRIPTION\",
+              \"repo_owner\": \"$ORG_NAME\"
+            }" -u "$GITEA_ADMIN_USER:$GITEA_ADMIN_PASSWORD" "$GITEA_URL/api/v1/repos/migrate")
+            if [ "$(echo "$MIGRATE_REPO_RESPONSE" | jq -r .full_name)" != "$ORG_NAME/$REPO_NAME" ]; then
+                echo "Failed to create repository"
+                exit 1
+            fi
+            echo "Repository '$REPO_NAME' created in organization '$ORG_NAME'"
+          else
+            echo "Error checking repository, status code: $REPO_EXISTS_CODE"
+            exit 1
+          fi
+
+          echo "Job completed successfully"
+        env:
+        - name: GITEA_ADMIN_USER
+          valueFrom:
+            secretKeyRef:
+              name: gitea-admin-credentials
+              key: username
+        - name: GITEA_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: gitea-admin-credentials
+              key: password
+      restartPolicy: OnFailure
+  backoffLimit: 4
