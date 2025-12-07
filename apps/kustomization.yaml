@@ -3,11 +3,3 @@ kind: Kustomization
 resources:
   - cert-manager-repo.yaml
   - cert-manager.yaml
-  - longhorn-repo.yaml
-  - longhorn-ns.yaml
-  - longhorn.yaml
-  - postgres-operator-repo.yaml
-  - postgres-operator.yaml
-  - https://raw.githubusercontent.com/borg286/gitea-operator/refs/heads/main/dist/install.yaml
-  - https://github.com/hyperspike/valkey-operator/releases/download/v0.0.61/install.yaml
-  - gitea.yaml
