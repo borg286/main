@@ -1,0 +1,40 @@
+# 1. Deployment for the Nginx Pod
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  labels:
+    app: nginx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+---
+# 2. Service to expose the Nginx Pod via NodePort
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-nodeport-service
+spec:
+  # The selector ensures the service targets Pods with the label 'app: nginx'
+  selector:
+    app: nginx
+  type: NodePort
+  ports:
+    - protocol: TCP
+      port: 80 # The port the service itself listens on (cluster-internal)
+      targetPort: 80 # The port the container is listening on (Nginx's default)
+      # The NodePort is automatically assigned by Kubernetes if not specified.
+      # It will be in the range 30000-32767.
+      # You can optionally set it, e.g., nodePort: 30080

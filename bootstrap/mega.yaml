@@ -1,0 +1,261 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flux-bootstrap
+  namespace: default
+---
+# ClusterRole granting Flux bootstrap the common cluster-scoped permissions it needs.
+# This is intentionally broad because bootstrap installs controllers, CRDs, cluster RBAC, etc.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: flux-bootstrap-clusterrole
+rules:
+  - apiGroups:
+      - '*'
+    resources:
+      - '*'
+    verbs:
+      - '*'
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: flux-bootstrap-crb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: flux-bootstrap-clusterrole
+subjects:
+  - kind: ServiceAccount
+    name: flux-bootstrap
+    namespace: default
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gitea-flux-bootstrap
+  namespace: default
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: flux-bootstrap
+      containers:
+      - name: bootstrap
+        image: borg286/bootstrap:latest
+        env:
+          - name: GITEA_FQDN
+            value: "gitea-http.gitea.svc.cluster.local:3000"
+          - name: GITEA_NAMESPACE
+            value: "gitea"
+          - name: ADMIN_SECRET_NAME
+            value: "gitea-admin"
+          - name: ADMIN_TOKEN_SECRET_NAME
+            value: "gitea-admin-token"
+          - name: ORG_NAME
+            value: "main_org"
+          - name: TEAM_NAME
+            value: "main_team"
+          - name: REPO
+            value: "main"
+          - name: FLUX_REPO_PATH
+            value: "clusters/my-cluster"
+          - name: GITHUB_MERGE_REPO
+            value: "https://github.com/borg286/main.git"
+        command:
+          - /bin/bash
+          - -c
+          - |
+            set -euo pipefail
+            export NAMESPACE="${GITEA_NAMESPACE}"
+            export ADMIN_SECRET="${ADMIN_SECRET_NAME}"
+            export TOKEN_SECRET="${ADMIN_TOKEN_SECRET_NAME}"
+            export ORG="${ORG_NAME}"
+            export TEAM="${TEAM_NAME}"
+            export REPO="${REPO}"
+            export PATH="${PATH}:/usr/local/bin"
+
+            log() { echo "$(date -Is) - $*"; }
+
+            log "Ensuring namespace ${NAMESPACE} exists..."
+            kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+
+            if kubectl get secret -n "${NAMESPACE}" "${ADMIN_SECRET}" >/dev/null 2>&1; then
+              log "Admin secret ${ADMIN_SECRET} found; reading username/password..."
+              GITEA_USERNAME=$(kubectl get secret -n "${NAMESPACE}" "${ADMIN_SECRET}" -o jsonpath='{.data.username}' | base64 --decode)
+              GITEA_PASSWORD=$(kubectl get secret -n "${NAMESPACE}" "${ADMIN_SECRET}" -o jsonpath='{.data.password}' | base64 --decode)
+            else
+              log "Admin secret ${ADMIN_SECRET} not found; generating password and creating secret..."
+              GITEA_USERNAME="gitea_admin"
+              GITEA_PASSWORD=$(openssl rand -base64 24)
+              kubectl create secret generic "${ADMIN_SECRET}" -n "${NAMESPACE}" \
+                --from-literal=username="${GITEA_USERNAME}" --from-literal=password="${GITEA_PASSWORD}" \
+                --dry-run=client -o yaml | kubectl apply -f -
+              log "Created secret ${ADMIN_SECRET} in ${NAMESPACE}"
+            fi
+
+            # re-read to ensure canonical
+            GITEA_USERNAME=$(kubectl get secret -n "${NAMESPACE}" "${ADMIN_SECRET}" -o jsonpath='{.data.username}' | base64 --decode)
+            GITEA_PASSWORD=$(kubectl get secret -n "${NAMESPACE}" "${ADMIN_SECRET}" -o jsonpath='{.data.password}' | base64 --decode)
+
+            log "Preparing helm values file to reference existing secret instead of passing password inline..."
+            cat > /tmp/gitea-values.yaml <<EOF
+            # multiple common chart variants covered:
+            admin:
+              existingSecret: ${ADMIN_SECRET}
+              userKey: username
+              passwordKey: password
+            valkey-cluster:
+              enabled: false
+            valkey:
+              enabled: true
+            postgresql-hq:
+              enabled: false
+            postttgresql:
+              enabled: true
+            gitea:
+              config:
+                log:
+                  LEVEL: Trace
+              admin:
+                existingSecret: ${ADMIN_SECRET}
+                userKey: username
+                passwordKey: password
+            existingSecret: ${ADMIN_SECRET}
+            EOF
+
+
+            log "Installing/upgrading gitea with secret-ref values..."
+            if helm status gitea --namespace "${NAMESPACE}" | grep -q "STATUS: deployed"; then
+              log "Helm is deployed"
+            else
+              log "Adding gitea helm repo and updating..."
+              helm repo add gitea https://dl.gitea.com/charts/ >/dev/null 2>&1 || true
+              helm repo update
+
+              helm upgrade --install gitea gitea/gitea \
+                --namespace "${NAMESPACE}" --create-namespace \
+                -f /tmp/gitea-values.yaml --wait --atomic
+            fi
+
+            log "Waiting for Gitea deployment to be available..."
+            kubectl -n "${NAMESPACE}" wait --for=condition=available deployment --all --timeout=10m
+
+            if kubectl get secret -n "${NAMESPACE}" "${TOKEN_SECRET}" >/dev/null 2>&1; then
+              log "Admin token secret ${TOKEN_SECRET} exists; reading token..."
+              GITEA_TOKEN=$(kubectl get secret -n "${NAMESPACE}" "${TOKEN_SECRET}" -o jsonpath='{.data.token}' | base64 --decode)
+            else
+              log "Admin token secret ${TOKEN_SECRET} not found; creating token via Gitea API..."
+              API="http://${GITEA_FQDN}/api/v1/users/${GITEA_USERNAME}/tokens"
+              TOKEN_NAME="flux-bootstrap-$(date +%s)"
+              resp=$(curl -sS -u "${GITEA_USERNAME}:${GITEA_PASSWORD}" -H "Content-Type: application/json" \
+                -d "{\"name\":\"${TOKEN_NAME}\", \"scopes\": [\"read:misc\", \"write:repository\", \"read:repository\", \"write:organization\", \"read:organization\", \"read:user\"]}" \
+                --connect-timeout 5 --max-time 30 "${API}")
+              echo "${resp}"
+              GITEA_TOKEN=$(echo "$resp" | jq -r '.sha1 // .token // .token_value // empty')
+              kubectl create secret generic "${TOKEN_SECRET}" -n "${NAMESPACE}" \
+                --from-literal=token="${GITEA_TOKEN}" \
+                --dry-run=client -o yaml | kubectl apply -f -
+              log "Stored new token in secret ${TOKEN_SECRET}"
+            fi
+
+            GITEA_TOKEN=$(kubectl get secret -n "${NAMESPACE}" "${TOKEN_SECRET}" -o jsonpath='{.data.token}' | base64 --decode)
+            auth_header=(-H "Authorization: token ${GITEA_TOKEN}")
+            log "Ensuring organization ${ORG} exists..."
+            if ! curl -fsS "${auth_header[@]}" "${GITEA_FQDN}/api/v1/orgs/${ORG}" >/dev/null; then
+              log "Creating org ${ORG}"
+              curl -fsS "${auth_header[@]}"  -H "Content-Type: application/json" -X POST "${GITEA_FQDN}/api/v1/orgs" -d @- <<EOF
+              {
+                "username": "${ORG}",
+                "full_name": "${ORG}",
+                "description": "Main Org",
+                "visibility": "public"
+              }
+              EOF
+            else
+              log "Org ${ORG} already exists"
+            fi
+
+            log "Ensuring team ${TEAM} exists in ${ORG}..."
+
+            if ! curl -fsS "${auth_header[@]}"  "${GITEA_FQDN}/api/v1/orgs/${ORG}/teams" | jq -e --arg TEAM "${TEAM}" '.[] | select(.name == $TEAM)' >/dev/null; then
+              log "Creating team ${TEAM}"
+              curl -fsS "${auth_header[@]}"  -H "Content-Type: application/json" -X POST "${GITEA_FQDN}/api/v1/orgs/${ORG}/teams"  -d @- <<EOF
+              {
+                "name": "${TEAM}",
+                "permission": "write",
+                "description": "Main Team"
+              }
+            EOF
+            else
+              log "Team ${TEAM} already exists"
+            fi
+
+            REPO_API_URL_BASE="${GITEA_FQDN}/api/v1/repos/${ORG}/${REPO}"
+            if curl -fsS "${auth_header[@]}" "${REPO_API_URL_BASE}" >/dev/null; then
+              log "Repository ${ORG}/${REPO} already exists. Skipping creation."
+            else
+              log "Creating Gitea repository ${ORG}/${REPO} as a migration of ${GITHUB_MERGE_REPO}..."
+              REPO_API_URL="${GITEA_FQDN}/api/v1/repos/migrate"
+              resp=$(curl -fsS "${auth_header[@]}" -H "Content-Type: application/json" -X POST "${REPO_API_URL}" -d @- <<EOF
+            {
+                "description": "Mirror of ${GITHUB_MERGE_REPO}",
+                "mirror_interval": "3m",
+                "mirror": true,
+                "private": true,
+                "clone_addr": "${GITHUB_MERGE_REPO}",
+                "service": "github",
+                "repo_owner": "${ORG}",
+                "repo_name": "${REPO}",
+            }
+            EOF
+            )
+              if [ $? -eq 0 ]; then
+                log "Successfully triggered mirror creation for ${ORG}/${REPO}."
+              else
+                log "Mirror creation API call failed. Response: ${resp}"
+                exit 2
+              fi
+            fi
+
+            # Ensure flux-system namespace exists (required for Flux resources)
+            kubectl create namespace "flux-system" --dry-run=client -o yaml | kubectl apply -f - || true
+
+            if kubectl get secret -n "flux-system" "gitea-deploy-ssh" >/dev/null 2>&1; then
+              log "Flux Secret ${DEPLOY_SECRET} in flux-system already exists. Skipping key generation and secret creation."
+            else
+              log "Generating SSH Key Pair for Deploy Key..."
+              # Generate the key pair without a passphrase
+              ssh-keygen -t rsa -b 4096 -f /tmp/id_rsa_deploy -N ""
+              # Extract public and private keys
+              DEPLOY_PUBLIC_KEY=$(cat /tmp/id_rsa_deploy.pub)
+              DEPLOY_PRIVATE_KEY=$(cat /tmp/id_rsa_deploy)
+              # API call to add the deploy key to the Gitea mirrored repository
+              DEPLOY_KEY_API_URL="${GITEA_FQDN}/api/v1/repos/${ORG}/${REPO}/keys"
+              log "Adding deploy key to Gitea repo ${ORG}/${REPO}..."
+              resp=$(curl -fsS "${auth_header[@]}" -H "Content-Type: application/json" -X POST "${DEPLOY_KEY_API_URL}" -d @- <<EOF
+            {
+              "key": "${DEPLOY_PUBLIC_KEY}",
+              "title": "flux-system-deploy-key",
+              "read_only": true
+            }
+            EOF
+            )
+              if [ $? -eq 0 ]; then
+                log "Successfully created deploy key in Gitea."
+              else
+                log "Deploy key creation API call failed. Response: ${resp}"
+                exit 3
+              fi
+              # Create Kubernetes Secret in flux-system namespace
+              FLUX_NAMESPACE="flux-system"
+              log "Creating SSH deploy key secret gitea-deploy-ssh in flux-system..."
+              # Create the Secret of type Opaque, but formatted like a Flux identity secret
+              kubectl create secret generic "gitea-deploy-ssh" -n "flux-system" \
+                --type=opaque \
+                --from-literal=identity="${DEPLOY_PRIVATE_KEY}" \
+                --dry-run=client -o yaml | kubectl apply -f -
+              log "Created Flux Secret gitea-deploy-ssh in flux-system for Gitea access."
+            fi
+            log "Bootstrap job completed successfully."

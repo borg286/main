@@ -1,0 +1,54 @@
+# test-app.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo-server
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: echo-server
+  template:
+    metadata:
+      labels:
+        app: echo-server
+    spec:
+      containers:
+      - name: echo
+        image: mendhak/http-https-echo:23
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-server-service
+  namespace: default
+spec:
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+  selector:
+    app: echo-server
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: echo-server-ingress
+  namespace: default
+spec:
+  tls:
+  - hosts:
+    - "test.3474103.xyz"
+    secretName: wildcard-tls
+  rules:
+  - host: "test.3474103.xyz"
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: echo-server-service
+            port:
+              number: 8080

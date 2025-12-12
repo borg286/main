@@ -1,6 +1,8 @@
 machine:
   nodeLabels:
     node.longhorn.io/create-default-disk: "true"
+    node.kubernetes.io/exclude-from-external-load-balancers:
+      $patch: delete  # allow loadbalancer l2 advertisement on the controlplane
   install:
     disk: ${disk_device}
     # Only siderolabs/iscsi-tools was selected

@@ -48,7 +48,6 @@ locals {
 # --- Providers and Random Passwords (Needed across all steps) ---
 
 provider "talos" {}
-provider "helm" {}
 
 # --- Talos Configuration & Bootstrap ---
 

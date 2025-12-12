@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    meta.helm.sh/release-name: kong-kong
+    meta.helm.sh/release-namespace: kong
+  creationTimestamp: "2025-12-09T03:27:16Z"
+  labels:
+    app.kubernetes.io/instance: kong-kong
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: kong
+    app.kubernetes.io/version: "3.3"
+    enable-metrics: "true"
+    helm.sh/chart: kong-2.24.0
+    helm.toolkit.fluxcd.io/name: kong
+    helm.toolkit.fluxcd.io/namespace: flux-system
+  name: kong-kong-kong-proxy
+  namespace: kong
+  resourceVersion: "36401"
+  uid: ee471eb2-c4dc-4c8b-9c3b-af2909b58c2f
+spec:
+  clusterIP: 10.108.8.80
+  clusterIPs:
+  - 10.108.8.80
+  externalIPs:
+  - 50.47.202.155
+  externalTrafficPolicy: Cluster
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: kong-proxy
+    nodePort: 30300
+    port: 80
+    protocol: TCP
+    targetPort: 8000
+  - name: kong-proxy-tls
+    nodePort: 32084
+    port: 443
+    protocol: TCP
+    targetPort: 8443
+  selector:
+    app.kubernetes.io/component: app
+    app.kubernetes.io/instance: kong-kong
+    app.kubernetes.io/name: kong
+  sessionAffinity: None
+  type: NodePort
+status:
+  loadBalancer: {}
