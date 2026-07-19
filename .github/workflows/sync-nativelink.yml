@@ -34,22 +34,54 @@ jobs:
             --username oauth2accesstoken \
             --password-stdin
 
-      # 4. Fetch the official release chart package directly from GitHub Releases and push to GAR
-      - name: Mirror NativeLink Chart via GitHub Release Source
+      # 4. Pull down the raw OCI layers, logging the response directly to the console
+      - name: Raw OCI Manifest Inspection & Mirror
         run: |
-          echo "==> Downloading official NativeLink chart archive v0.6.2..."
-          # Pull down the verified chart tarball directly from the source repository release assets
-          curl -LO "https://github.com/TraceMachina/nativelink/releases/download/v0.6.2/nativelink-0.6.2.tgz"
+          echo "==> Requesting dynamic public authentication token..."
+          TOKEN=$(curl -s "https://public.ecr.aws/token/?service=public.ecr.aws&scope=repository:b1l4l6w7/tracemachina/nativelink:pull" | jq -r '.token')
 
-          echo "==> Verifying downloaded archive footprint..."
+          echo "==> Fetching raw registry manifest envelope..."
+          # Fetch the manifest while logging HTTP status codes to see exactly what AWS thinks we are asking for
+          MANIFEST_RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}\n" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.index.v1+json" \
+            "https://public.ecr.aws/v2/b1l4l6w7/tracemachina/nativelink/manifests/0.6.2")
+
+          echo "=== Full Registry Output ==="
+          echo "$MANIFEST_RESPONSE"
+
+          # Extract the JSON payload out from the status code tracking
+          MANIFEST=$(echo "$MANIFEST_RESPONSE" | grep -v "HTTP_STATUS")
+          HTTP_STATUS=$(echo "$MANIFEST_RESPONSE" | grep "HTTP_STATUS" | cut -d':' -f2)
+
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "CRITICAL: Registry gate rejected the request with status code $HTTP_STATUS"
+            exit 1
+          fi
+
+          echo "==> Resolving layer target digest..."
+          BLOB_DIGEST=$(echo "$MANIFEST" | jq -r 'if .layers then .layers[0].digest else .config.digest end')
+          echo "Target Layer Digest Resolved to: $BLOB_DIGEST"
+
+          if [ "$BLOB_DIGEST" == "null" ] || [ -z "$BLOB_DIGEST" ]; then
+            echo "Failed to identify storage layers."
+            exit 1
+          fi
+
+          echo "==> Pulling physical tarball bytes..."
+          curl -L -H "Authorization: Bearer $TOKEN" \
+            "https://public.ecr.aws/v2/b1l4l6w7/tracemachina/nativelink/blobs/$BLOB_DIGEST" \
+            -o nativelink-0.6.2.tgz
+
+          echo "==> Verifying new archive footprint..."
           ls -lh nativelink-0.6.2.tgz
+          file nativelink-0.6.2.tgz
 
           echo "==> Authenticating to Google Artifact Registry..."
-          # Seamlessly authenticates back to your private central repository via Workload Identity
           gcloud auth print-access-token | helm registry login us-central1-docker.pkg.dev \
             --username oauth2accesstoken \
             --password-stdin
 
-          echo "==> Injecting OCI layer into target GAR repository..."
+          echo "==> Pushing validated chart back to GAR..."
           helm push nativelink-0.6.2.tgz oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
           helm push nativelink-0.6.2.tgz oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
