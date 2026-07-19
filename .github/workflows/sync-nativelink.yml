@@ -34,17 +34,40 @@ jobs:
             --username oauth2accesstoken \
             --password-stdin
 
-      # 4. Pull from the actual flat ECR root repository and push to your GAR namespace
-      - name: Mirror NativeLink Chart Natively
+      # 4. Fetch the Helm layer directly via raw OCI API calls and push to GAR
+      - name: Fetch and Mirror NativeLink Chart
         run: |
-          # Pull using the verified public repository URI
-          helm pull oci://public.ecr.aws/b1l4l6w7/nativelink --version 0.6.2
+          echo "==> Requesting an public bearer token from AWS ECR..."
+          TOKEN=$(curl -s "https://public.ecr.aws/token/?service=public.ecr.aws&scope=repository:b1l4l6w7/tracemachina/nativelink:pull" | jq -r '.token')
           
-          # Fresh authenticate to Google Artifact Registry
+          echo "==> Retrieving the OCI manifest for version 0.6.2..."
+          MANIFEST=$(curl -s -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" \
+            "https://public.ecr.aws/v2/b1l4l6w7/tracemachina/nativelink/manifests/0.6.2")
+          
+          # Inspect the manifest content to extract the actual chart layer blob digest
+          echo "==> Extracting Helm chart layer digest..."
+          BLOB_DIGEST=$(echo "$MANIFEST" | jq -r '.layers[0].digest')
+          
+          if [ "$BLOB_DIGEST" == "null" ] || [ -z "$BLOB_DIGEST" ]; then
+            echo "Failed to parse manifest layers. Raw response:"
+            echo "$MANIFEST"
+            exit 1
+          fi
+          
+          echo "==> Downloading chart tarball layer: $BLOB_DIGEST"
+          curl -L -H "Authorization: Bearer $TOKEN" \
+            "https://public.ecr.aws/v2/b1l4l6w7/tracemachina/nativelink/blobs/$BLOB_DIGEST" \
+            -o nativelink-0.6.2.tgz
+
+          echo "==> Verifying download..."
+          ls -lh nativelink-0.6.2.tgz
+
+          echo "==> Authenticating to Google Artifact Registry..."
           gcloud auth print-access-token | helm registry login us-central1-docker.pkg.dev \
             --username oauth2accesstoken \
             --password-stdin
 
-          # Push the local archive into your project storage target
+          echo "==> Pushing Helm artifact to target GAR repository..."
           helm push nativelink-0.6.2.tgz oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
           helm push nativelink-0.6.2.tgz oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
