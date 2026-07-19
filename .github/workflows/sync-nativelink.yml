@@ -34,7 +34,7 @@ jobs:
             --username oauth2accesstoken \
             --password-stdin
 
-      # 4. Final definitive mirror: Environment-based configuration
+      # 4. Final definitive mirror: Environment-based configuration with clean encoding
       - name: Mirror NativeLink via OCI Copy
         run: |
           echo "==> Fetching public OCI registry anonymous token..."
@@ -47,12 +47,12 @@ jobs:
           
           echo "==> Configuring authentication via DOCKER_CONFIG..."
           mkdir -p .docker
-          echo "{\"auths\":{\"public.ecr.aws\":{\"auth\":\"$(echo -n "unused:$TOKEN" | base64)\"}}}" > .docker/config.json
-          export DOCKER_CONFIG="$(pwd)/.docker"
+          # The -n flag here prevents the trailing newline that broke the JSON
+          AUTH_STRING=$(echo -n "unused:$TOKEN" | base64 -w 0)
+          echo "{\"auths\":{\"public.ecr.aws\":{\"auth\":\"$AUTH_STRING\"}}}" > .docker/config.json
           
           echo "==> Performing direct OCI-to-OCI mirror..."
-          # By setting DOCKER_CONFIG, ORAS finds the file automatically
-          ./oras copy \
+          DOCKER_CONFIG="$(pwd)/.docker" ./oras copy \
             public.ecr.aws/b1l4l6w7/tracemachina/nativelink:artifacthub.io \
             us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo/nativelink:0.6.2 \
             --to-username oauth2accesstoken \
