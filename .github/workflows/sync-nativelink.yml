@@ -34,46 +34,38 @@ jobs:
             --username oauth2accesstoken \
             --password-stdin
 
-      # 4. Extract ECR layer footprints via target manifest array and mirror to GAR
-      - name: Locate and Mirror NativeLink Layers
+      # 4. Pull the chart using a completely isolated workspace context and push to GAR
+      - name: Sterile Context Helm Mirror & Log Inspection
         run: |
-          echo "==> Fetching public OCI registry anonymous token..."
-          TOKEN=$(curl -s "https://public.ecr.aws/token/?service=public.ecr.aws&scope=repository:b1l4l6w7/tracemachina/nativelink:pull" | jq -r '.token')
+          echo "==> Preparing clear isolation sandbox..."
+          mkdir -p helm-sandbox
+          cd helm-sandbox
 
-          echo "==> Downloading specialized layer transport..."
-          curl -LO https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz
-          mkdir -p oras-bin && tar -zxf oras_1.2.0_linux_amd64.tar.gz -C oras-bin
+          echo "==> Executing sterile helm pull with maximum verbose tracking..."
+          # By unsetting the global auth vars and driving a clean subshell, 
+          # we force Helm to use a guest transport without attaching GCP token context.
+          (
+            unset GOOGLE_APPLICATION_CREDENTIALS
+            unset CLOUDSDK_AUTH_CREDENTIAL_FILE
+            helm pull oci://public.ecr.aws/b1l4l6w7/tracemachina/nativelink \
+              --version 0.6.2 \
+              --debug
+          )
 
-          echo "==> Pulling full OCI registry blob manifest matrix..."
-          # Target the explicit metadata registry point to access the repository configuration space
-          ./oras-bin/oras blob fetch \
-            -H "Authorization: Bearer $TOKEN" \
-            --output manifest.json \
-            public.ecr.aws/b1l4l6w7/tracemachina/nativelink@sha256:c5bfb8baffb3204e6b24f080c1f928ea3401ef5ed0f688d6c2ee9951438b86b7
+          echo "==> Validating sandbox output contents..."
+          ls -lh
+          
+          CHART_PACKAGE=$(ls *.tgz 2>/dev/null | head -n 1)
+          if [ -z "$CHART_PACKAGE" ]; then
+            echo "CRITICAL: Helm package download could not be located on disk."
+            exit 1
+          fi
 
-          echo "=== Manifest Layout Map ==="
-          cat manifest.json
-
-          echo "==> Extracting underlying archive package layer..."
-          # Dig into the layers to find the data blob containing the chart binary
-          CHART_BLOB=$(jq -r '.layers[0].digest' manifest.json)
-          echo "Target binary blob resolved to: $CHART_BLOB"
-
-          echo "==> Extracting compiled chart archive bytes..."
-          ./oras-bin/oras blob fetch \
-            -H "Authorization: Bearer $TOKEN" \
-            --output nativelink-0.6.2.tgz \
-            public.ecr.aws/b1l4l6w7/tracemachina/nativelink@$CHART_BLOB
-
-          echo "==> Verifying artifact validation signature..."
-          ls -lh nativelink-0.6.2.tgz
-          file nativelink-0.6.2.tgz
-
-          echo "==> Authenticating into Google Artifact Registry..."
+          echo "==> Authenticating into target Google Artifact Registry..."
+          # Return to the primary shell context where gcloud credentials are active
           gcloud auth print-access-token | helm registry login us-central1-docker.pkg.dev \
             --username oauth2accesstoken \
             --password-stdin
 
-          echo "==> Injecting final OCI layer target to GAR..."
-          helm push nativelink-0.6.2.tgz oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
-          helm push nativelink-0.6.2.tgz oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
+          echo "==> Injecting verified package layer to GAR..."
+          helm push "$CHART_PACKAGE" oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
