@@ -1,11 +1,11 @@
 name: Sync NativeLink OCI Chart to GAR
 
 on:
-  workflow_dispatch: # Allows you to trigger this manually from the GitHub UI
+  workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write # Absolute requirement for requesting the OIDC federated token
+  id-token: write
 
 jobs:
   sync:
@@ -21,11 +21,24 @@ jobs:
           workload_identity_provider: 'projects/622867420398/locations/global/workloadIdentityPools/github-actions-pool-v2/providers/github-provider'
           create_credentials_file: true
 
-      # 2. Sync directly using Skopeo (it will automatically pick up the ambient credentials)
-      - name: Sync OCI Artifact via Skopeo
+      # 2. Set up the Helm CLI binary on the runner
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'v3.14.0'
+
+      # 3. Log straight into Google Artifact Registry using helm registry login
+      - name: Log in to Google Artifact Registry
         run: |
-          skopeo copy \
-            --src-no-creds \
-            --dest-creds=oauth2accesstoken:$(gcloud auth print-access-token) \
-            docker://public.ecr.aws/b1l4l6w7/tracemachina/nativelink:0.6.2 \
-            docker://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo/nativelink:0.6.2
+          gcloud auth print-access-token | helm registry login us-central1-docker.pkg.dev \
+            --username oauth2accesstoken \
+            --password-stdin
+
+      # 4. Pull natively from AWS ECR Public and push natively to Google Artifact Registry
+      - name: Mirror Helm Chart via OCI
+        run: |
+          # Pull the chart artifact locally to the runner
+          helm pull oci://public.ecr.aws/b1l4l6w7/tracemachina/nativelink --version 0.6.2
+          
+          # Push the packaged archive straight into your GAR repository path
+          helm push nativelink-0.6.2.tgz oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
