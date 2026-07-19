@@ -34,59 +34,23 @@ jobs:
             --username oauth2accesstoken \
             --password-stdin
 
-      # 4. Pull the chart archive directly using raw OCI HTTP API hooks and push to GAR
-      - name: Fetch and Mirror NativeLink Chart
+      # 4. Pull via standard HTTP Helm repo and push to GAR as an OCI layer
+      - name: Mirror NativeLink Chart via HTTP Upstream
         run: |
-          echo "==> Requesting dynamic public authentication token..."
-          # Fetch a public token with open action mapping scoped to the repository namespace
-          TOKEN=$(curl -s "https://public.ecr.aws/token/?service=public.ecr.aws&scope=repository:b1l4l6w7/tracemachina/nativelink:pull" | jq -r '.token')
+          echo "==> Registering the official NativeLink Helm repository upstream..."
+          helm repo add nativelink-upstream https://tracemachina.github.io/nativelink
+          helm repo update
 
-          echo "==> Fetching OCI Chart Index Manifest..."
-          # Query ECR explicitly requesting the native OCI image manifest types
-          MANIFEST=$(curl -s \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/vnd.oci.image.manifest.v1+json" \
-            "https://public.ecr.aws/v2/b1l4l6w7/tracemachina/nativelink/manifests/0.6.2")
+          echo "==> Pulling chart archive version 0.6.2 locally to runner..."
+          helm pull nativelink-upstream/nativelink --version 0.6.2
 
-          echo "==> Checking registry response payload..."
-          # If ECR returned a tag error, try querying the version reference as an image index fall-through
-          if echo "$MANIFEST" | grep -q "MANIFEST_UNKNOWN"; then
-            echo "Direct OCI reference missed; attempting multi-architecture index lookups..."
-            MANIFEST=$(curl -s \
-              -H "Authorization: Bearer $TOKEN" \
-              -H "Accept: application/vnd.oci.image.index.v1+json" \
-              "https://public.ecr.aws/v2/b1l4l6w7/tracemachina/nativelink/manifests/0.6.2")
-          fi
-
-          # Extract the primary layer digest pattern containing the packaged Helm archive
-          BLOB_DIGEST=$(echo "$MANIFEST" | jq -r 'if .layers then .layers[0].digest else .manifests[0].digest end')
-
-          if [ "$BLOB_DIGEST" == "null" ] || [ -z "$BLOB_DIGEST" ]; then
-            echo "CRITICAL: Could not resolve target manifest layers. Raw payload output:"
-            echo "$MANIFEST"
-            exit 1
-          fi
-
-          # Handle index redirection if the registry served a multi-manifest payload envelope
-          if echo "$MANIFEST" | jq -e '.manifests' >/dev/null; then
-            echo "==> Extracting secondary child layer references: $BLOB_DIGEST"
-            SUB_MANIFEST=$(curl -s \
-              -H "Authorization: Bearer $TOKEN" \
-              -H "Accept: application/vnd.oci.image.manifest.v1+json" \
-              "https://public.ecr.aws/v2/b1l4l6w7/tracemachina/nativelink/manifests/$BLOB_DIGEST")
-            BLOB_DIGEST=$(echo "$SUB_MANIFEST" | jq -r '.layers[0].digest')
-          fi
-
-          echo "==> Pulling native chart layer tarball target: $BLOB_DIGEST"
-          curl -L -H "Authorization: Bearer $TOKEN" \
-            "https://public.ecr.aws/v2/b1l4l6w7/tracemachina/nativelink/blobs/$BLOB_DIGEST" \
-            -o nativelink-0.6.2.tgz
+          echo "==> Verifying local package archive..."
+          ls -lh nativelink-0.6.2.tgz
 
           echo "==> Re-authenticating to Google Artifact Registry..."
           gcloud auth print-access-token | helm registry login us-central1-docker.pkg.dev \
             --username oauth2accesstoken \
             --password-stdin
 
-          echo "==> Pushing Helm archive into target GAR repository..."
+          echo "==> Pushing Helm artifact to target GAR repository..."
           helm push nativelink-0.6.2.tgz oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
-            --output json
