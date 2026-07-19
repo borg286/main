@@ -44,17 +44,19 @@ jobs:
           curl -LO https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz
           mkdir -p oras-bin && tar -zxf oras_1.2.0_linux_amd64.tar.gz -C oras-bin
 
+          echo "==> Initializing sterile configuration file..."
+          echo "{}" > isolated-config.json
+
           echo "==> Pulling Helm chart layer bytes from ECR Public..."
-          # Pass the dynamic token via bearer flag to bypass GitHub Actions IP scanning blocks
+          # Pass the mock configuration to completely detach from runner host states
           ./oras-bin/oras pull \
-            --registry-config /dev/null \
+            --registry-config isolated-config.json \
             -H "Authorization: Bearer $TOKEN" \
             public.ecr.aws/b1l4l6w7/tracemachina/nativelink:0.6.2
 
           echo "==> Confirming extracted tarball file layout..."
           ls -lh
 
-          # Dynamically identify the extracted tgz filename if it doesn't match the standard schema
           CHART_PACKAGE=$(ls *.tgz | head -n 1)
           echo "Found target artifact package: $CHART_PACKAGE"
 
