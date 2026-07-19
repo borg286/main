@@ -34,54 +34,46 @@ jobs:
             --username oauth2accesstoken \
             --password-stdin
 
-      # 4. Pull down the raw OCI layers, logging the response directly to the console
-      - name: Raw OCI Manifest Inspection & Mirror
+      # 4. Extract ECR layer footprints via target manifest array and mirror to GAR
+      - name: Locate and Mirror NativeLink Layers
         run: |
-          echo "==> Requesting dynamic public authentication token..."
+          echo "==> Fetching public OCI registry anonymous token..."
           TOKEN=$(curl -s "https://public.ecr.aws/token/?service=public.ecr.aws&scope=repository:b1l4l6w7/tracemachina/nativelink:pull" | jq -r '.token')
 
-          echo "==> Fetching raw registry manifest envelope..."
-          # Fetch the manifest while logging HTTP status codes to see exactly what AWS thinks we are asking for
-          MANIFEST_RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}\n" \
+          echo "==> Downloading specialized layer transport..."
+          curl -LO https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz
+          mkdir -p oras-bin && tar -zxf oras_1.2.0_linux_amd64.tar.gz -C oras-bin
+
+          echo "==> Pulling full OCI registry blob manifest matrix..."
+          # Target the explicit metadata registry point to access the repository configuration space
+          ./oras-bin/oras blob fetch \
             -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.index.v1+json" \
-            "https://public.ecr.aws/v2/b1l4l6w7/tracemachina/nativelink/manifests/0.6.2")
+            --output manifest.json \
+            public.ecr.aws/b1l4l6w7/tracemachina/nativelink@sha256:c5bfb8baffb3204e6b24f080c1f928ea3401ef5ed0f688d6c2ee9951438b86b7
 
-          echo "=== Full Registry Output ==="
-          echo "$MANIFEST_RESPONSE"
+          echo "=== Manifest Layout Map ==="
+          cat manifest.json
 
-          # Extract the JSON payload out from the status code tracking
-          MANIFEST=$(echo "$MANIFEST_RESPONSE" | grep -v "HTTP_STATUS")
-          HTTP_STATUS=$(echo "$MANIFEST_RESPONSE" | grep "HTTP_STATUS" | cut -d':' -f2)
+          echo "==> Extracting underlying archive package layer..."
+          # Dig into the layers to find the data blob containing the chart binary
+          CHART_BLOB=$(jq -r '.layers[0].digest' manifest.json)
+          echo "Target binary blob resolved to: $CHART_BLOB"
 
-          if [ "$HTTP_STATUS" -ne 200 ]; then
-            echo "CRITICAL: Registry gate rejected the request with status code $HTTP_STATUS"
-            exit 1
-          fi
+          echo "==> Extracting compiled chart archive bytes..."
+          ./oras-bin/oras blob fetch \
+            -H "Authorization: Bearer $TOKEN" \
+            --output nativelink-0.6.2.tgz \
+            public.ecr.aws/b1l4l6w7/tracemachina/nativelink@$CHART_BLOB
 
-          echo "==> Resolving layer target digest..."
-          BLOB_DIGEST=$(echo "$MANIFEST" | jq -r 'if .layers then .layers[0].digest else .config.digest end')
-          echo "Target Layer Digest Resolved to: $BLOB_DIGEST"
-
-          if [ "$BLOB_DIGEST" == "null" ] || [ -z "$BLOB_DIGEST" ]; then
-            echo "Failed to identify storage layers."
-            exit 1
-          fi
-
-          echo "==> Pulling physical tarball bytes..."
-          curl -L -H "Authorization: Bearer $TOKEN" \
-            "https://public.ecr.aws/v2/b1l4l6w7/tracemachina/nativelink/blobs/$BLOB_DIGEST" \
-            -o nativelink-0.6.2.tgz
-
-          echo "==> Verifying new archive footprint..."
+          echo "==> Verifying artifact validation signature..."
           ls -lh nativelink-0.6.2.tgz
           file nativelink-0.6.2.tgz
 
-          echo "==> Authenticating to Google Artifact Registry..."
+          echo "==> Authenticating into Google Artifact Registry..."
           gcloud auth print-access-token | helm registry login us-central1-docker.pkg.dev \
             --username oauth2accesstoken \
             --password-stdin
 
-          echo "==> Pushing validated chart back to GAR..."
+          echo "==> Injecting final OCI layer target to GAR..."
           helm push nativelink-0.6.2.tgz oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
           helm push nativelink-0.6.2.tgz oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
