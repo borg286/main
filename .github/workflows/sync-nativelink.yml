@@ -34,20 +34,47 @@ jobs:
             --username oauth2accesstoken \
             --password-stdin
 
-      # 4. Discover the exact AWS ECR Public chart path and tags
-      - name: Discover ECR Public Repository Layout
+      # 4. Fetch the Helm archive layer bypassing ambient runner environment maps
+      - name: Fetch and Mirror NativeLink Chart
         run: |
-          echo "=== Listing all public repositories under alias b1l4l6w7 ==="
-          aws ecr-public describe-repositories \
-            --registry-id b1l4l6w7 \
-            --region us-east-1 \
-            --query 'repositories[*].repositoryName' \
-            --output table
+          echo "==> Fetching public repository bearer token..."
+          TOKEN=$(env -i curl -s "https://public.ecr.aws/token/?service=public.ecr.aws&scope=repository:b1l4l6w7/tracemachina/nativelink:pull" | jq -r '.token')
+          
+          echo "==> Fetching OCI Chart Index Manifest..."
+          # Force an completely clean environment to prevent the GitHub runner from leaking metadata headers
+          MANIFEST=$(env -i curl -s -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+            "https://public.ecr.aws/v2/b1l4l6w7/tracemachina/nativelink/manifests/0.6.2")
+          
+          echo "==> Extracting layout content digest..."
+          # If it's a multi-architecture index manifest, grab the first image layer descriptor
+          BLOB_DIGEST=$(echo "$MANIFEST" | jq -r 'if .layers then .layers[0].digest else .manifests[0].digest end')
+          
+          if [ "$BLOB_DIGEST" == "null" ] || [ -z "$BLOB_DIGEST" ]; then
+            echo "Failed to locate artifact layers. Registry response:"
+            echo "$MANIFEST"
+            exit 1
+          fi
+          
+          # If the digest pointed to a sub-manifest index, resolve the underlying target layer
+          if echo "$MANIFEST" | jq -e '.manifests' >/dev/null; then
+            echo "==> Resolving inner target manifest layers: $BLOB_DIGEST"
+            SUB_MANIFEST=$(env -i curl -s -H "Authorization: Bearer $TOKEN" \
+              -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+              "https://public.ecr.aws/v2/b1l4l6w7/tracemachina/nativelink/manifests/$BLOB_DIGEST")
+            BLOB_DIGEST=$(echo "$SUB_MANIFEST" | jq -r '.layers[0].digest')
+          fi
 
-          echo "=== Listing tags for tracemachina/nativelink ==="
-          aws ecr-public describe-image-tags \
-            --registry-id b1l4l6w7 \
-            --repository-name tracemachina/nativelink \
-            --region us-east-1 \
-            --query 'imageTagDetails[*].imageTag' \
+          echo "==> Pulling target package tarball: $BLOB_DIGEST"
+          env -i curl -L -H "Authorization: Bearer $TOKEN" \
+            "https://public.ecr.aws/v2/b1l4l6w7/tracemachina/nativelink/blobs/$BLOB_DIGEST" \
+            -o nativelink-0.6.2.tgz
+
+          echo "==> Authenticating back into Google Artifact Registry..."
+          gcloud auth print-access-token | helm registry login us-central1-docker.pkg.dev \
+            --username oauth2accesstoken \
+            --password-stdin
+
+          echo "==> Injecting OCI archive into target GAR repository..."
+          helm push nativelink-0.6.2.tgz oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
             --output json
