@@ -34,46 +34,22 @@ jobs:
             --username oauth2accesstoken \
             --password-stdin
 
-      # 4. Pull the verified OCI artifact via the active repository tag and push to GAR
-      - name: Mirror NativeLink Chart via Verified OCI Tag
+      # 4. Pull natively using an isolated Helm environment, then push to GAR
+      - name: Mirror NativeLink Chart
         run: |
-          echo "==> Fetching public OCI registry anonymous token..."
-          TOKEN=$(curl -s "https://public.ecr.aws/token/?service=public.ecr.aws&scope=repository:b1l4l6w7/tracemachina/nativelink:pull" | jq -r '.token')
+          echo "==> Pulling chart from ECR Public using a clean environment..."
+          # Clean the environment to stop Google Cloud credentials from leaking into the public AWS request
+          env -i PATH="$PATH" HOME="$HOME" helm pull oci://public.ecr.aws/b1l4l6w7/tracemachina/nativelink --version 0.6.2
 
-          echo "==> Downloading ORAS CLI binary..."
-          curl -LO https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz
-          mkdir -p oras-bin && tar -zxf oras_1.2.0_linux_amd64.tar.gz -C oras-bin
+          echo "==> Verifying downloaded archive..."
+          ls -lh nativelink-0.6.2.tgz
 
-          echo "==> Initializing sterile configuration file..."
-          echo "{}" > isolated-config.json
-
-          echo "==> Pulling full OCI artifact layout from ECR Public..."
-          # Target the specific verified metadata tag present in the repository
-          ./oras-bin/oras pull \
-            --registry-config isolated-config.json \
-            -H "Authorization: Bearer $TOKEN" \
-            public.ecr.aws/b1l4l6w7/tracemachina/nativelink:artifacthub.io
-
-          echo "==> Locating the extracted chart archive..."
-          ls -lh
-
-          # Grab whatever .tgz file was extracted by the ORAS layer unpacker
-          CHART_PACKAGE=$(ls *.tgz 2>/dev/null | head -n 1)
-          
-          if [ -z "$CHART_PACKAGE" ]; then
-            echo "No tarball extracted directly. Checking all pulled files..."
-            ls -a
-            # Fallback check in case it extracted without an extension
-            CHART_PACKAGE=$(find . -maxdepth 1 -type f -not -name "*oras*" -not -name "*config*" -not -name ".*" | head -n 1)
-          fi
-          
-          echo "Targeting package for upload: $CHART_PACKAGE"
-
-          echo "==> Authenticating into Google Artifact Registry..."
+          echo "==> Authenticating to Google Artifact Registry..."
+          # This line naturally consumes your active Workload Identity state
           gcloud auth print-access-token | helm registry login us-central1-docker.pkg.dev \
             --username oauth2accesstoken \
             --password-stdin
 
-          echo "==> Uploading OCI layer package to target GAR repository..."
-          helm push "$CHART_PACKAGE" oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
+          echo "==> Injecting OCI layer into target GAR repository..."
+          helm push nativelink-0.6.2.tgz oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
           helm push nativelink-0.6.2.tgz oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
