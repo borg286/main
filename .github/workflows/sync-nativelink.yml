@@ -34,38 +34,30 @@ jobs:
             --username oauth2accesstoken \
             --password-stdin
 
-      # 4. Pull the chart using a completely isolated workspace context and push to GAR
-      - name: Sterile Context Helm Mirror & Log Inspection
+      # 4. Perform a direct OCI-to-OCI copy from the validated source tag to your target GAR
+      - name: Mirror NativeLink via OCI Copy
         run: |
-          echo "==> Preparing clear isolation sandbox..."
-          mkdir -p helm-sandbox
-          cd helm-sandbox
+          echo "==> Fetching public OCI registry anonymous token..."
+          TOKEN=$(curl -s "https://public.ecr.aws/token/?service=public.ecr.aws&scope=repository:b1l4l6w7/tracemachina/nativelink:pull" | jq -r '.token')
 
-          echo "==> Executing sterile helm pull with maximum verbose tracking..."
-          # By unsetting the global auth vars and driving a clean subshell, 
-          # we force Helm to use a guest transport without attaching GCP token context.
-          (
-            unset GOOGLE_APPLICATION_CREDENTIALS
-            unset CLOUDSDK_AUTH_CREDENTIAL_FILE
-            helm pull oci://public.ecr.aws/b1l4l6w7/tracemachina/nativelink \
-              --version 0.6.2 \
-              --debug
-          )
+          echo "==> Installing ORAS CLI..."
+          curl -LO https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz
+          tar -zxf oras_1.2.0_linux_amd64.tar.gz oras
+          sudo mv oras /usr/local/bin/
 
-          echo "==> Validating sandbox output contents..."
-          ls -lh
-          
-          CHART_PACKAGE=$(ls *.tgz 2>/dev/null | head -n 1)
-          if [ -z "$CHART_PACKAGE" ]; then
-            echo "CRITICAL: Helm package download could not be located on disk."
-            exit 1
-          fi
-
-          echo "==> Authenticating into target Google Artifact Registry..."
-          # Return to the primary shell context where gcloud credentials are active
-          gcloud auth print-access-token | helm registry login us-central1-docker.pkg.dev \
+          echo "==> Authenticating to Google Artifact Registry..."
+          # Log into your destination registry
+          echo "$GAR_PASSWORD" | helm registry login us-central1-docker.pkg.dev \
             --username oauth2accesstoken \
             --password-stdin
 
-          echo "==> Injecting verified package layer to GAR..."
+          echo "==> Performing direct OCI-to-OCI mirror..."
+          # Copying directly from the artifacthub.io tag to your private repo
+          # This avoids the local filesystem packaging issues entirely
+          oras copy \
+            public.ecr.aws/b1l4l6w7/tracemachina/nativelink:artifacthub.io \
+            us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo/nativelink:0.6.2 \
+            -u anonymous -p "$TOKEN" \
+            --to-username oauth2accesstoken \
+            --to-password "$(gcloud auth print-access-token)"
           helm push "$CHART_PACKAGE" oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
