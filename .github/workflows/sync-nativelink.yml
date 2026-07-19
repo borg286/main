@@ -34,29 +34,26 @@ jobs:
             --username oauth2accesstoken \
             --password-stdin
 
-      # 4. Final definitive mirror: absolute pathing and persistent binary check
+      # 4. Final definitive mirror: Environment-based configuration
       - name: Mirror NativeLink via OCI Copy
         run: |
           echo "==> Fetching public OCI registry anonymous token..."
           TOKEN=$(curl -s "https://public.ecr.aws/token/?service=public.ecr.aws&scope=repository:b1l4l6w7/tracemachina/nativelink:pull" | jq -r '.token')
 
           echo "==> Ensuring ORAS binary is present..."
-          # Download to a known location and ensure it's executable
           curl -LO https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz
           tar -zxf oras_1.2.0_linux_amd64.tar.gz oras
           chmod +x oras
           
-          # Use absolute path to the binary in the runner's workspace
-          ORAS_PATH="$(pwd)/oras"
-
-          echo "==> Configuring authentication bypass..."
+          echo "==> Configuring authentication via DOCKER_CONFIG..."
           mkdir -p .docker
           echo "{\"auths\":{\"public.ecr.aws\":{\"auth\":\"$(echo -n "unused:$TOKEN" | base64)\"}}}" > .docker/config.json
+          export DOCKER_CONFIG="$(pwd)/.docker"
           
           echo "==> Performing direct OCI-to-OCI mirror..."
-          "$ORAS_PATH" copy \
+          # By setting DOCKER_CONFIG, ORAS finds the file automatically
+          ./oras copy \
             public.ecr.aws/b1l4l6w7/tracemachina/nativelink:artifacthub.io \
             us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo/nativelink:0.6.2 \
-            --registry-config .docker/config.json \
             --to-username oauth2accesstoken \
             --to-password "$(gcloud auth print-access-token)"
