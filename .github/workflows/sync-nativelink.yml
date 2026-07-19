@@ -34,11 +34,12 @@ jobs:
             --username oauth2accesstoken \
             --password-stdin
 
-      # 4. Pull natively from AWS ECR Public and push natively to Google Artifact Registry
-      - name: Mirror Helm Chart via OCI
-        run: |
-          # Pull the chart artifact locally to the runner
-          helm pull oci://public.ecr.aws/b1l4l6w7/tracemachina/nativelink --version 0.6.2
-          
-          # Push the packaged archive straight into your GAR repository path
+      # 4. Pull natively from the absolute AWS ECR path and push to GAR
+      name: Mirror Helm Chart via OCI
+      run: |
+        # Pull by pointing cleanly to the full ECR reference path
+        helm pull oci://public.ecr.aws/b1l4l6w7/tracemachina/nativelink --version 0.6.2
+        
+        # Push directly to the regional repository root namespace where your permissions are bound
+        helm push nativelink-0.6.2.tgz oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
           helm push nativelink-0.6.2.tgz oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
