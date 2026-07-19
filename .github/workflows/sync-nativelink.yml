@@ -34,23 +34,35 @@ jobs:
             --username oauth2accesstoken \
             --password-stdin
 
-      # 4. Pull via standard HTTP Helm repo and push to GAR as an OCI layer
-      - name: Mirror NativeLink Chart via HTTP Upstream
+      # 4. Pull via raw OCI artifact stream using ORAS and push to GAR
+      - name: Mirror NativeLink Chart via ORAS
         run: |
-          echo "==> Registering the official NativeLink Helm repository upstream..."
-          helm repo add nativelink-upstream https://tracemachina.github.io/nativelink
-          helm repo update
+          echo "==> Fetching public OCI registry anonymous token..."
+          TOKEN=$(curl -s "https://public.ecr.aws/token/?service=public.ecr.aws&scope=repository:b1l4l6w7/tracemachina/nativelink:pull" | jq -r '.token')
 
-          echo "==> Pulling chart archive version 0.6.2 locally to runner..."
-          helm pull nativelink-upstream/nativelink --version 0.6.2
+          echo "==> Downloading ORAS CLI binary..."
+          curl -LO https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz
+          mkdir -p oras-bin && tar -zxf oras_1.2.0_linux_amd64.tar.gz -C oras-bin
 
-          echo "==> Verifying local package archive..."
-          ls -lh nativelink-0.6.2.tgz
+          echo "==> Pulling Helm chart layer bytes from ECR Public..."
+          # Pass the dynamic token via bearer flag to bypass GitHub Actions IP scanning blocks
+          ./oras-bin/oras pull \
+            --registry-config /dev/null \
+            -H "Authorization: Bearer $TOKEN" \
+            public.ecr.aws/b1l4l6w7/tracemachina/nativelink:0.6.2
 
-          echo "==> Re-authenticating to Google Artifact Registry..."
+          echo "==> Confirming extracted tarball file layout..."
+          ls -lh
+
+          # Dynamically identify the extracted tgz filename if it doesn't match the standard schema
+          CHART_PACKAGE=$(ls *.tgz | head -n 1)
+          echo "Found target artifact package: $CHART_PACKAGE"
+
+          echo "==> Authenticating into Google Artifact Registry..."
           gcloud auth print-access-token | helm registry login us-central1-docker.pkg.dev \
             --username oauth2accesstoken \
             --password-stdin
 
-          echo "==> Pushing Helm artifact to target GAR repository..."
+          echo "==> Uploading OCI layer package to target GAR repository..."
+          helm push "$CHART_PACKAGE" oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
           helm push nativelink-0.6.2.tgz oci://us-central1-docker.pkg.dev/fiery-orb-681/nativelink-repo
